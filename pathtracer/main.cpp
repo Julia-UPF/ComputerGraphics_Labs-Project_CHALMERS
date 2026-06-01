@@ -149,6 +149,30 @@ void cleanupScenes()
 	}
 }
 
+//for gui integration
+void updateAreaLights()
+{
+	pathtracer::disc_lights.clear();
+
+	if (withArealights)
+	{
+		pathtracer::disc_lights.push_back(pathtracer::DiscLight{
+			1000.0f,
+			vec3(1.0f, 0.8f, 0.0f),
+			vec3(-8.0f, 10.0f, 8.0f),
+			normalize(vec3(10.0f, -2.0f, 10.0f)),
+			8.0f
+			});
+
+		pathtracer::disc_lights.push_back(pathtracer::DiscLight{
+			1000.0f,
+			vec3(0.1f, 0.3f, 1.0f),
+			vec3(-10.0f, 20.0f, -5.0f),
+			normalize(-vec3(-10.0f, 20.0f, -5.0f)),
+			10.0f
+			});
+	}
+}
 
 ///////////////////////////////////////////////////////////////////////////////
 // Load shaders, environment maps, models and so on
@@ -202,20 +226,7 @@ void initialize()
 	//vec3 position;
 	//vec3 direction;
 	//float radius;
-	if (withArealights){
-		pathtracer::disc_lights.push_back( pathtracer::DiscLight{
-										   1000,
-										   {1, 0.8, 0},
-										   {-8, 10, 8},
-										   glm::normalize(glm::vec3(10, -2, 10)),
-										   8.0 } );
-		pathtracer::disc_lights.push_back( pathtracer::DiscLight{
-										   1000,										//intensity_mulyiplier
-										   {0.1, 0.3, 1},								//color
-										   {-10, 20, -5},								//position
-										   glm::normalize(-glm::vec3(-10, 20, -5)),		//direction
-										   10.0 } );									//radius
-	}
+	updateAreaLights();
 
 	///////////////////////////////////////////////////////////////////////////
 	// Load environment map
@@ -329,6 +340,7 @@ void display(void)
 		}
 	}
 }
+
 
 bool handleEvents(void)
 {
@@ -592,6 +604,7 @@ void gui()
 	{
 		if(ImGui::Checkbox("Area Lights", &withArealights))
 		{
+			updateAreaLights();
 			pathtracer::restart();
 		}
 		ImGui::Checkbox("Show Light Overlays", &showLightSources);

@@ -165,7 +165,7 @@ vec3 Li(Ray& primary_ray)
 			float area = M_PI * light.radius * light.radius;
 			float cos_light = std::max(0.0f, dot(light_normal, -wi));			//how much the light faces the surface (necessary because it emits light only from front side)
 
-			float pdf = (distance_to_light * distance_to_light) / (area * cos_light);		//pdf for sampling the area light, including the conversion from solid angle to area
+			float pdf = (distance_to_light * distance_to_light) / (cos_light);		//pdf for sampling the area light		(when i include area term, the pdf is distance^2 / (cos_light * area), but the image converges to high light (white)
 
 			vec3 contribution = mat.f(wi, hit.wo, hit.shading_normal)*Li/pdf;
 
