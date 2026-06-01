@@ -28,6 +28,7 @@ std::vector<vec3> normal_buffer;		//indexing will be idx = y*width + x
 std::vector<float> depth_buffer;		//color buffer in rendered_image.data
 Image filtered_image;
 
+//Problem: not always used... only if we want denoised image. Waste of memory? small...
 
 ///////////////////////////////////////////////////////////////////////////
 // Restart rendering of image
@@ -78,19 +79,19 @@ vec3 Lenvironment(const vec3& wi)
 vec3 Li(Ray& primary_ray)
 {
 	bool inside = false;		//Added to keep track of whether the ray is inside a medium or not, for refraction
-	vec3 sigma_t = vec3(0.0f);	//Added to keep track of absorption in the medium for refraction
+	vec3 sigma_t = vec3(0.0f);	//Added to keep track of absorption in the medium for refraction. Should be different for each material
 	vec3 L = vec3(0.0f);
 	vec3 path_throughput = vec3(1.0);
 	Ray current_ray = primary_ray;
 
-	for (int bounce = 0; bounce < settings.max_bounces; ++bounce) {		//ADDED for multiple bounces
+	for (int bounce = 0; bounce < settings.max_bounces; ++bounce) {		//ADDED for multiple bounces (basic path tracing)
 		///////////////////////////////////////////////////////////////////
 		// Get the intersection information from the ray
 		///////////////////////////////////////////////////////////////////
 		Intersection hit = getIntersection(current_ray);
 		if (inside) {
-			float distance = length(hit.position - current_ray.o);
-			vec3 transmittance = exp(-sigma_t * distance);
+			float distance = length(hit.position - current_ray.o);		//Calculate distance traveled in the medium for absorption (thinkness of glass)
+			vec3 transmittance = exp(-sigma_t * distance);		//Beer's law for absorption
 			path_throughput *= transmittance;		//Calculate absorption/scattering in the medium for refraction
 		}
 
@@ -105,9 +106,6 @@ vec3 Li(Ray& primary_ray)
 		MetalBSDF metal(&microfacet, hit.material->m_color, hit.material->m_fresnel);
 		BSDFLinearBlend metal_blend(hit.material->m_metalness, &metal, &dielectric);
 		BSDF& mat = metal_blend; */
-
-		//GlassBTDF glass(hit.material->m_ior);		//Glass only
-		//BTDF& mat = glass;
 
 		Diffuse diffuse(hit.material->m_color);								//Full (with refractions)
 		GlassBTDF glass(hit.material->m_ior);
@@ -127,23 +125,27 @@ vec3 Li(Ray& primary_ray)
 		DielectricBSDF dielectric(&microfacet, &diffuse, hit.material->m_fresnel);
 		BSDF& mat = dielectric;*/
 
+		//GlassBTDF glass(hit.material->m_ior);		//Glass only
+		//BTDF& mat = glass;
 
 		///////////////////////////////////////////////////////////
 		// Direct illumination with Area Lighs
 		///////////////////////////////////////////////////////////
 		vec3 direct_illum = vec3(0.0f);
-		for (const DiscLight& light: disc_lights) {
-			vec3 light_normal = normalize(light.direction);
+		for (const DiscLight& light: disc_lights) {			//for each area light
+			vec3 light_normal = normalize(light.direction);		//necessary? it should already be normalized, but just in case
 			//Sample random point
-			float r = sqrt(randf()) * light.radius;
+			float r = sqrt(randf()) * light.radius;				//Uniform sampling of a disk. without sqrt, points would be more concentrated towards the center
 			float theta = 2 * M_PI * randf();
 
 			float x = r * cos(theta);
 			float y = r * sin(theta);
 
-			vec3 tangent = normalize(perpendicular(light_normal));
-			vec3 bitangent = normalize(cross(light_normal, tangent));
+			//find orthonormal basis for the disk light to 
+			vec3 tangent = normalize(perpendicular(light_normal));		 //Find a vector perpendicular to the normal to use as a tangent. 
+			vec3 bitangent = normalize(cross(light_normal, tangent));	//Find the bitangent using the cross product to ensure an orthonormal basis
 
+			//Calculate the real world position of the sampled point on the disk light using the orthonormal basis
 			vec3 light_pos = light.position + x * tangent + y * bitangent;
 
 
@@ -152,23 +154,24 @@ vec3 Li(Ray& primary_ray)
 			shadow_ray.o = hit.position + hit.geometry_normal * EPSILON; //ray doesn't start exactly on the surface to avoid self-intersection
 			shadow_ray.d = normalize(light_pos - hit.position);
 
-			if (occluded(shadow_ray))
+			if (occluded(shadow_ray))		//If the shadow ray is occluded, skip this light sample
 				continue;
-
-			float cos_surface = std::max(0.0f, dot(hit.shading_normal, shadow_ray.d));
-			float cos_light = std::max(0.0f, dot(light_normal, -shadow_ray.d));
+			vec3 wi = shadow_ray.d;			//Direction from the hit point to the light source
+			float cos_term = std::max(0.0f, dot(hit.shading_normal, wi));		//how much the surface faces the light
 
 			vec3 Li = light.color * light.intensity_multiplier;
 
 			const float distance_to_light = length(light_pos - hit.position);
-			const float falloff_factor = cos_surface*cos_light / (distance_to_light * distance_to_light);
-			vec3 contribution = mat.f(shadow_ray.d, hit.wo, hit.shading_normal)*Li*falloff_factor;
+			float area = M_PI * light.radius * light.radius;
+			float cos_light = std::max(0.0f, dot(light_normal, -wi));			//how much the light faces the surface (necessary because it emits light only from front side)
+
+			float pdf = (distance_to_light * distance_to_light) / (area * cos_light);		//pdf for sampling the area light, including the conversion from solid angle to area
+
+			vec3 contribution = mat.f(wi, hit.wo, hit.shading_normal)*Li/pdf;
 
 			direct_illum += contribution;
 
 		}
-
-		L += path_throughput * direct_illum;
 
 
 		///////////////////////////////////////////////////////////////////
@@ -178,25 +181,26 @@ vec3 Li(Ray& primary_ray)
 		shadow_ray.o = hit.position + hit.geometry_normal * EPSILON; //ray doesn't start exactly on the surface to avoid self-intersection
 		shadow_ray.d = normalize(point_light.position - hit.position);
 											//if occluded, the point is in shadow and we don't add any contribution from the light source
+		
 		const float distance_to_light = length(point_light.position - hit.position);
-		const float falloff_factor = 1.0f / (distance_to_light * distance_to_light);
-		vec3 Li = point_light.intensity_multiplier * point_light.color * falloff_factor;
-		vec3 wi = normalize(point_light.position - hit.position);
-		vec3 direct_illumination = mat.f(wi, hit.wo, hit.shading_normal) * Li * std::max(0.0f, dot(wi, hit.shading_normal));
+		const float falloff_factor = 1.0f / (distance_to_light * distance_to_light);		//light spreads out with distance	(pdf)
+
+		vec3 Li = point_light.intensity_multiplier * point_light.color;
+		vec3 wi = normalize(point_light.position - hit.position); //same as shadow_ray.d... (I did this first)
+		float cos_term = std::max(0.0f, dot(hit.shading_normal, wi));			//how much the surface faces the light
+		vec3 direct_illumination_point = mat.f(wi, hit.wo, hit.shading_normal) * Li * falloff_factor * cos_term;
 		
 		if (!occluded(shadow_ray)) {
-			L += path_throughput * direct_illumination;
+			direct_illum += direct_illumination_point;
 		}
 		
-
-		L += path_throughput * hit.material->m_emission;			//if ray hits emissive object, add this light
+		L += path_throughput * (direct_illum+hit.material->m_emission); //final = contribution(direct illumination + emission) 
+																							//emission: if ray hits emissive object, add its light
 		
-
-
 		//SAMPLE NEXT RAY
 		WiSample sample = mat.sample_wi(hit.wo, hit.shading_normal);
 
-		if (sample.pdf < EPSILON || path_throughput == vec3(0.0f))
+		if (sample.pdf < EPSILON || path_throughput == vec3(0.0f))			//if invalid sample or carries no energy, stop
 			return L;
 
 		float cosineterm = abs(dot(sample.wi, hit.shading_normal));
@@ -205,17 +209,19 @@ vec3 Li(Ray& primary_ray)
 
 		Ray new_ray;
 		new_ray.d = sample.wi;
-		if(dot(sample.wi, hit.geometry_normal) < 0.0f)
+
+		if(dot(sample.wi, hit.geometry_normal) < 0.0f) //inside material (wi and normal point in opposite directions)
 		{
-			new_ray.o = hit.position - hit.geometry_normal * EPSILON;
-			inside = true;		//If the ray goes inside the object, we set inside to true
+			new_ray.o = hit.position - hit.geometry_normal * EPSILON; //start ray just inside the surface to avoid self-intersection
+
+			inside = true;										
 			sigma_t = (vec3(1.0f) - hit.material->m_color)*0.1f;		//Set sigma to the opposite of color of the material for refraction and scale it so that it's not too strong (the 0.1f is just a value I found to give good results, it can be changed to get more or less absorption in the medium for refraction)
 			//it could also be set depending on the material but for simplicity (not change all materials to have a sigma value) I just set it depending on the color of the material, so that darker materials have more absorption and lighter materials have less absorption for refraction
 		}
 		else
 		{
-			new_ray.o = hit.position + hit.geometry_normal * EPSILON;
-			inside = false;		//If the ray goes outside the object, we set inside to false
+			new_ray.o = hit.position + hit.geometry_normal * EPSILON; //move origin sslightly outside surface
+			inside = false;		
 			sigma_t = vec3(0.0f);		//No absorption outside the object for refraction
 		}
 		current_ray = new_ray;
@@ -267,12 +273,13 @@ void tracePaths(const glm::mat4& V, const glm::mat4& P)
 			vec3 color;
 			Ray primaryRay;
 			primaryRay.o = camera_pos;
+
 			// Create a ray that starts in the camera position and points toward
 			// the current pixel on a virtual screen.
 			float random1 = randf();		//ADDED to get a random number in the range [0,1] (anti-aliasing) 
 			float random2 = randf();
-			vec2 screenCoord = vec2((float(x) + random1)/ float(rendered_image.width),
-			                        (float(y) + random2)/ float(rendered_image.height));
+			vec2 screenCoord = vec2((float(x) + random1)/ rendered_image.width, (float(y) + random2) / rendered_image.height);
+			
 			// Calculate direction
 			vec4 viewCoord = vec4(screenCoord.x * 2.0f - 1.0f, screenCoord.y * 2.0f - 1.0f, 1.0f, 1.0f);
 			vec3 p = homogenize(inverse(P * V) * viewCoord);

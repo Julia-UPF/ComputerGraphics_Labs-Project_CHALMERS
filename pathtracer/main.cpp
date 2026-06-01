@@ -178,7 +178,12 @@ void initialize()
 	// Initial path-tracer settings
 	///////////////////////////////////////////////////////////////////////////
 	pathtracer::settings.max_bounces = 8;
-	pathtracer::settings.max_paths_per_pixel = 2000; // So it stops... 0 = infinite!
+	pathtracer::settings.max_paths_per_pixel = 1024; // So it stops... 0 = infinite!
+	pathtracer::settings.firefly_clamping = false;
+	pathtracer::settings.use_depth_field = false;
+	pathtracer::settings.aperture_radius = 0.05f;
+	pathtracer::settings.focus_distance = 60.0f;
+
 #ifdef _DEBUG
 	pathtracer::settings.subsampling = 16;
 #else
@@ -205,11 +210,11 @@ void initialize()
 										   glm::normalize(glm::vec3(10, -2, 10)),
 										   8.0 } );
 		pathtracer::disc_lights.push_back( pathtracer::DiscLight{
-										   1000,
-										   {0.1, 0.3, 1},
-										   {-10, 20, -5},
-										   glm::normalize(-glm::vec3(-10, 20, -5)),
-										   10.0 } );
+										   1000,										//intensity_mulyiplier
+										   {0.1, 0.3, 1},								//color
+										   {-10, 20, -5},								//position
+										   glm::normalize(-glm::vec3(-10, 20, -5)),		//direction
+										   10.0 } );									//radius
 	}
 
 	///////////////////////////////////////////////////////////////////////////
@@ -247,7 +252,7 @@ void display(void)
 		{
 			pathtracer::resize(w, h);
 			windowWidth = w;
-			windowWidth = h;
+			windowHeight = h;
 			old_subsampling = pathtracer::settings.subsampling;
 		}
 	}
@@ -265,7 +270,7 @@ void display(void)
 	bool finished_rendering = (pathtracer::settings.max_paths_per_pixel != 0)
 		&& (pathtracer::rendered_image.number_of_samples >= pathtracer::settings.max_paths_per_pixel);
 	
-	if (finished_rendering&&showDenoisedImage) {
+	if (finished_rendering && showDenoisedImage) {		//added to see a denoised image when the pathtracer is done rendering (bilateral denoiser)
 		pathtracer::applyBilateralFilter();
 		glActiveTexture(GL_TEXTURE0);
 		glBindTexture(GL_TEXTURE_2D, pathtracer_result_txt_id);
@@ -495,8 +500,8 @@ void gui()
 			pathtracer::restart();
 		}
 
-		ImGui::Text("Num. samples: %d", pathtracer::getSampleCount());
-		if (ImGui::CollapsingHeader("Depth of Field", "depth_of_field_ch", true, true))
+		ImGui::Text("Num. samples: %d", pathtracer::getSampleCount());				
+		if (ImGui::CollapsingHeader("Depth of Field", "depth_of_field_ch", true, true))		//added
 		{
 			if (ImGui::Checkbox("Use Depth of Field", &pathtracer::settings.use_depth_field))
 			{
@@ -511,7 +516,7 @@ void gui()
 				pathtracer::restart();
 			}
 		}
-		if (ImGui::CollapsingHeader("Denoising", "denoising_ch", true, true))
+		if (ImGui::CollapsingHeader("Denoising", "denoising_ch", true, true))			//added
 		{
 			ImGui::Checkbox("Show Denoised Image", &showDenoisedImage);
 			if (ImGui::Checkbox("Firefly Clamping", &pathtracer::settings.firefly_clamping))

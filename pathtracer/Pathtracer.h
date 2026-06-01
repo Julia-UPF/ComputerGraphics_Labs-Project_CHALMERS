@@ -26,10 +26,10 @@ extern struct Settings
 	int subsampling;
 	int max_bounces;
 	int max_paths_per_pixel;
-	bool firefly_clamping = false;
-	bool use_depth_field = false;
-	float aperture_radius = 0.05f;
-	float focus_distance = 20.0f;
+	bool firefly_clamping;
+	bool use_depth_field;
+	float aperture_radius;
+	float focus_distance;
 };
 extern Settings settings;
 
