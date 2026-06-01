@@ -23,6 +23,12 @@ Image rendered_image;
 PointLight point_light;
 std::vector<DiscLight> disc_lights;
 
+//For post-processing
+std::vector<vec3> normal_buffer;		//indexing will be idx = y*width + x
+std::vector<float> depth_buffer;		//color buffer in rendered_image.data
+Image filtered_image;
+
+
 ///////////////////////////////////////////////////////////////////////////
 // Restart rendering of image
 ///////////////////////////////////////////////////////////////////////////
@@ -46,6 +52,8 @@ void resize(int w, int h)
 	rendered_image.width = w / settings.subsampling;
 	rendered_image.height = h / settings.subsampling;
 	rendered_image.data.resize(rendered_image.width * rendered_image.height);
+	normal_buffer.resize(rendered_image.width * rendered_image.height);
+	depth_buffer.resize(rendered_image.width * rendered_image.height);
 	restart();
 }
 
@@ -119,12 +127,56 @@ vec3 Li(Ray& primary_ray)
 		DielectricBSDF dielectric(&microfacet, &diffuse, hit.material->m_fresnel);
 		BSDF& mat = dielectric;*/
 
+
+		///////////////////////////////////////////////////////////
+		// Direct illumination with Area Lighs
+		///////////////////////////////////////////////////////////
+		vec3 direct_illum = vec3(0.0f);
+		for (const DiscLight& light: disc_lights) {
+			vec3 light_normal = normalize(light.direction);
+			//Sample random point
+			float r = sqrt(randf()) * light.radius;
+			float theta = 2 * M_PI * randf();
+
+			float x = r * cos(theta);
+			float y = r * sin(theta);
+
+			vec3 tangent = normalize(perpendicular(light_normal));
+			vec3 bitangent = normalize(cross(light_normal, tangent));
+
+			vec3 light_pos = light.position + x * tangent + y * bitangent;
+
+
+			//shadow
+			Ray shadow_ray;				//Added for shadows
+			shadow_ray.o = hit.position + hit.geometry_normal * EPSILON; //ray doesn't start exactly on the surface to avoid self-intersection
+			shadow_ray.d = normalize(light_pos - hit.position);
+
+			if (occluded(shadow_ray))
+				continue;
+
+			float cos_surface = std::max(0.0f, dot(hit.shading_normal, shadow_ray.d));
+			float cos_light = std::max(0.0f, dot(light_normal, -shadow_ray.d));
+
+			vec3 Li = light.color * light.intensity_multiplier;
+
+			const float distance_to_light = length(light_pos - hit.position);
+			const float falloff_factor = cos_surface*cos_light / (distance_to_light * distance_to_light);
+			vec3 contribution = mat.f(shadow_ray.d, hit.wo, hit.shading_normal)*Li*falloff_factor;
+
+			direct_illum += contribution;
+
+		}
+
+		L += path_throughput * direct_illum;
+
+
 		///////////////////////////////////////////////////////////////////
-		// Calculate Direct Illumination from light.
+		// Calculate Direct Illumination from point light.
 		///////////////////////////////////////////////////////////////////
-		Ray nray;				//Added for shadows
-		nray.o = hit.position + hit.geometry_normal * EPSILON; //ray doesn't start exactly on the surface to avoid self-intersection
-		nray.d = normalize(point_light.position - hit.position);
+		Ray shadow_ray;				//Added for shadows
+		shadow_ray.o = hit.position + hit.geometry_normal * EPSILON; //ray doesn't start exactly on the surface to avoid self-intersection
+		shadow_ray.d = normalize(point_light.position - hit.position);
 											//if occluded, the point is in shadow and we don't add any contribution from the light source
 		const float distance_to_light = length(point_light.position - hit.position);
 		const float falloff_factor = 1.0f / (distance_to_light * distance_to_light);
@@ -132,21 +184,27 @@ vec3 Li(Ray& primary_ray)
 		vec3 wi = normalize(point_light.position - hit.position);
 		vec3 direct_illumination = mat.f(wi, hit.wo, hit.shading_normal) * Li * std::max(0.0f, dot(wi, hit.shading_normal));
 		
-		if (!occluded(nray)) {
+		if (!occluded(shadow_ray)) {
 			L += path_throughput * direct_illumination;
 		}
 		
-		L += path_throughput * hit.material->m_emission;
+
+		L += path_throughput * hit.material->m_emission;			//if ray hits emissive object, add this light
+		
+
+
+		//SAMPLE NEXT RAY
 		WiSample sample = mat.sample_wi(hit.wo, hit.shading_normal);
 
-		if (sample.pdf < EPSILON || path_throughput == vec3(0))
+		if (sample.pdf < EPSILON || path_throughput == vec3(0.0f))
 			return L;
 
 		float cosineterm = abs(dot(sample.wi, hit.shading_normal));
-		path_throughput = path_throughput * (sample.f * cosineterm) / sample.pdf;
+		path_throughput = path_throughput * (sample.f * cosineterm) / sample.pdf;	//prob of this next ray
 
 
 		Ray new_ray;
+		new_ray.d = sample.wi;
 		if(dot(sample.wi, hit.geometry_normal) < 0.0f)
 		{
 			new_ray.o = hit.position - hit.geometry_normal * EPSILON;
@@ -160,7 +218,6 @@ vec3 Li(Ray& primary_ray)
 			inside = false;		//If the ray goes outside the object, we set inside to false
 			sigma_t = vec3(0.0f);		//No absorption outside the object for refraction
 		}
-		new_ray.d = sample.wi;
 		current_ray = new_ray;
 
 		if (!intersect(current_ray))
@@ -192,6 +249,10 @@ void tracePaths(const glm::mat4& V, const glm::mat4& P)
 		return;
 	}
 	vec3 camera_pos = vec3(glm::inverse(V) * vec4(0.0f, 0.0f, 0.0f, 1.0f));
+	std::fill(normal_buffer.begin(), normal_buffer.end(), vec3(0.0f)); //fill normal_buffer with initiaal vec3(0) normals
+	std::fill(depth_buffer.begin(), depth_buffer.end(), 1e30f); //fill depth_buffer with initiaal large number (best would be with far plane values but i couldn't find it)
+
+
 	// Trace one path per pixel (the omp parallel stuf magically distributes the
 	// pathtracing on all cores of your CPU).
 	int num_rays = 0;
@@ -202,6 +263,7 @@ void tracePaths(const glm::mat4& V, const glm::mat4& P)
 	{
 		for(int x = 0; x < rendered_image.width; x++)
 		{
+			int pixel_idx = y * rendered_image.width + x;
 			vec3 color;
 			Ray primaryRay;
 			primaryRay.o = camera_pos;
@@ -215,24 +277,137 @@ void tracePaths(const glm::mat4& V, const glm::mat4& P)
 			vec4 viewCoord = vec4(screenCoord.x * 2.0f - 1.0f, screenCoord.y * 2.0f - 1.0f, 1.0f, 1.0f);
 			vec3 p = homogenize(inverse(P * V) * viewCoord);
 			primaryRay.d = normalize(p - camera_pos);
+
+			if (settings.use_depth_field) {
+				//find camera space basis
+				vec3 forward = normalize(primaryRay.d);		//direction camera is facing
+				vec3 camera_right = normalize(cross(forward, vec3(0.0f, 1.0f, 0.0f)));	//right vector of the camera, perpendicular to the forward direction and the world up vector (0,1,0)
+				vec3 camera_up = normalize(cross(camera_right, forward));	//up vector of the camera, perpendicular to the forward direction and the camera right vector
+
+				vec3 focal_point = camera_pos + forward * settings.focus_distance;	//point in space where the camera is focused, so that objects at this distance will be in focus
+
+				//sample point on lens
+				float r = sqrt(randf()) * settings.aperture_radius;
+				float theta = 2 * M_PI * randf();
+
+				float lens_x = r * cos(theta);
+				float lens_y = r * sin(theta);
+
+				vec3 lens_pos = camera_pos + lens_x * camera_right + lens_y * camera_up;
+
+				primaryRay.o = lens_pos;
+				primaryRay.d = normalize(focal_point - lens_pos);
+			}
+
+
 			// Intersect ray with scene
 			if(intersect(primaryRay))
 			{
 				// If it hit something, evaluate the radiance from that point
 				color = Li(primaryRay);
+
+				//store normal & depth (for denoising...)
+				Intersection first_hit = getIntersection(primaryRay);
+				normal_buffer[pixel_idx] = first_hit.shading_normal;
+				depth_buffer[pixel_idx] = length(first_hit.position - camera_pos);
+
 			}
 			else
 			{
 				// Otherwise evaluate environment
 				color = Lenvironment(primaryRay.d);
 			}
+			//Firefly clamping
+			float luminance = dot(color, vec3(0.2126f, 0.7152f, 0.0722f));
+			float max_luminance = 10.0f;
+			if (luminance > max_luminance && settings.firefly_clamping)
+				color *= max_luminance / luminance;
+
+
 			// Accumulate the obtained radiance to the pixels color
 			float n = float(rendered_image.number_of_samples);
-			rendered_image.data[y * rendered_image.width + x] =
-			    rendered_image.data[y * rendered_image.width + x] * (n / (n + 1.0f))
+			rendered_image.data[pixel_idx] =
+			    rendered_image.data[pixel_idx] * (n / (n + 1.0f))
 			    + (1.0f / (n + 1.0f)) * color;
 		}
 	}
 	rendered_image.number_of_samples += 1;
+}
+
+
+void applyBilateralFilter()
+{
+	int width = rendered_image.width;
+	int height = rendered_image.height;
+
+	filtered_image.width = width;
+	filtered_image.height = height;
+	filtered_image.data.resize(width * height);
+
+	int pixel_step = 1; //3x3 filter
+	float sigma_color = 0.05f; //tune this for more or less smoothing
+	float sigma_space = 1.25f; //tune this for more or less smoothing
+	float sigma_depth = 0.15f; //tune this for more or less smoothing
+	float sigma_normal = 0.1f; //tune this for more or less smoothing
+
+#pragma omp parallel for 
+	for (int y = 0; y < height; y++) {
+		for (int x = 0; x < width; x++) {
+			vec3 sum = vec3(0.0f);
+			float weight_sum = 0.0f;
+
+			//find pixel's color, normal and depth to compare with neighbors (pixel in question is in the center of sqare filter)
+			int center_idx = y * width + x;
+
+			vec3 center_color = rendered_image.data[center_idx];
+			vec3 center_normal = normal_buffer[center_idx];
+			float center_depth = depth_buffer[center_idx];
+
+			//loop through neighbors in the filter
+			for (int dy = -pixel_step; dy <= pixel_step; dy++) {//from -2 to 2 if pixel_step is 2, so we get a 5x5 filter
+				for (int dx = -pixel_step; dx <= pixel_step; dx++) {
+					int neighbor_x = x + dx;
+					int neighbor_y = y + dy;
+
+					//check if neighbor is within image bounds
+					if (neighbor_x < 0 || neighbor_x >= width || neighbor_y < 0 || neighbor_y >= height)
+						continue; //continue to next neighbor if out of bounds
+
+					int neighbor_idx = neighbor_y * width + neighbor_x;
+
+					//get neighbor's color, normal and depth
+					vec3 neighbor_color = rendered_image.data[neighbor_idx];
+					vec3 neighbor_normal = normal_buffer[neighbor_idx];
+					float neighbor_depth = depth_buffer[neighbor_idx];
+
+					vec3 color_diff = neighbor_color - center_color;
+					vec3 normal_diff = neighbor_normal - center_normal;
+					float depth_diff = neighbor_depth - center_depth;
+					vec2 space_diff = vec2(dx, dy);
+
+
+					//calculate weights based on color, space, depth and normal differences
+					float w_color = exp(-dot(color_diff, color_diff) / 2.0f * sigma_color * sigma_color);		//all weights are gaussian: 1/(2sigma^2)*e^(-x^2/(2sigma^2)) where x is the difference between the neighbor and the center pixel for the respective attribute (color, space, depth or normal) and sigma is a parameter (variance) that can be tuned to get more or less smoothing
+					float w_space = exp(-dot(space_diff, space_diff) / 2.0f * sigma_space * sigma_space);
+					float w_depth = exp(-depth_diff * depth_diff / 2.0f * sigma_depth * sigma_depth);
+					float w_normal = exp(-dot(normal_diff, normal_diff) / 2.0f * sigma_normal * sigma_normal);
+
+					w_color = 1.0f;
+					//compute final weight and accumulate
+					float weight = w_color * w_space * w_depth * w_normal;
+					sum += neighbor_color * weight;
+					weight_sum += weight;
+				}
+			}
+
+			vec3 denoised_color = sum / std::max(weight_sum, 0.00001f);		//make sure not to devide by 0
+			vec3 original_color = rendered_image.data[center_idx];
+
+			float alpha = 0.25f;		//tune this for more or less smoothing, alpha is the blending factor between the original color and the denoised color, so that we can keep some of the details of the original image while still getting a smoother result
+
+			filtered_image.data[center_idx] = vec4(mix(original_color, denoised_color, alpha), 1.0f);		//make sure not to devide by 0
+
+		}
+	}
 }
 }; // namespace pathtracer

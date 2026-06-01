@@ -33,7 +33,9 @@ bool showUI = true;
 ivec2 g_prevMouseCoords = { -1, -1 };
 bool g_isMouseDragging = false;
 
+bool withArealights = false;
 bool showLightSources = false;
+bool showDenoisedImage = false;
 
 ///////////////////////////////////////////////////////////////////////////////
 // Shader programs
@@ -97,8 +99,8 @@ void loadScenes()
 		               },
 		               {
 		                   // Camera
-		                   vec3(-30, 15, 30),
-		                   normalize(-vec3(-30, 8, 30)),
+		                   vec3(-50, 20, 30),
+		                   normalize(-vec3(-50, 20, 30)),
 		               } };
 	// Modify the landingpad screen's color
 	scenes["Ship"].models[1].model->m_materials[8].m_color = glm::vec3(0.380392, 0.588235, 0.266667);
@@ -176,7 +178,7 @@ void initialize()
 	// Initial path-tracer settings
 	///////////////////////////////////////////////////////////////////////////
 	pathtracer::settings.max_bounces = 8;
-	pathtracer::settings.max_paths_per_pixel = 0; // 0 = Infinite
+	pathtracer::settings.max_paths_per_pixel = 2000; // So it stops... 0 = infinite!
 #ifdef _DEBUG
 	pathtracer::settings.subsampling = 16;
 #else
@@ -190,25 +192,25 @@ void initialize()
 	pathtracer::point_light.color = vec3(1.f, 1.f, 1.f);
 	pathtracer::point_light.position = vec3(10.0f, 25.0f, 20.0f);
 
-	// float intensity_multiplier;
-	// vec3 color;
-	// vec3 position;
-	// vec3 direction;
-	// float radius;
-	/*
-	pathtracer::disc_lights.push_back( pathtracer::DiscLight{
-									   1000,
-									   {1, 0.8, 0},
-									   {-8, 10, 8},
-									   glm::normalize(glm::vec3(10, -2, 10)),
-									   8.0 } );
-	pathtracer::disc_lights.push_back( pathtracer::DiscLight{
-									   1000,
-									   {0.1, 0.3, 1},
-									   {-10, 20, -5},
-									   glm::normalize(-glm::vec3(-10, 20, -5)),
-									   10.0 } );
-	*/
+	//float intensity_multiplier;
+	//vec3 color;
+	//vec3 position;
+	//vec3 direction;
+	//float radius;
+	if (withArealights){
+		pathtracer::disc_lights.push_back( pathtracer::DiscLight{
+										   1000,
+										   {1, 0.8, 0},
+										   {-8, 10, 8},
+										   glm::normalize(glm::vec3(10, -2, 10)),
+										   8.0 } );
+		pathtracer::disc_lights.push_back( pathtracer::DiscLight{
+										   1000,
+										   {0.1, 0.3, 1},
+										   {-10, 20, -5},
+										   glm::normalize(-glm::vec3(-10, 20, -5)),
+										   10.0 } );
+	}
 
 	///////////////////////////////////////////////////////////////////////////
 	// Load environment map
@@ -259,7 +261,18 @@ void display(void)
 	                                  / float(pathtracer::rendered_image.height),
 	                              0.1f, 100.0f);
 	pathtracer::tracePaths(viewMatrix, projMatrix);
-
+	
+	bool finished_rendering = (pathtracer::settings.max_paths_per_pixel != 0)
+		&& (pathtracer::rendered_image.number_of_samples >= pathtracer::settings.max_paths_per_pixel);
+	
+	if (finished_rendering&&showDenoisedImage) {
+		pathtracer::applyBilateralFilter();
+		glActiveTexture(GL_TEXTURE0);
+		glBindTexture(GL_TEXTURE_2D, pathtracer_result_txt_id);
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, pathtracer::rendered_image.width,
+			pathtracer::rendered_image.height, 0, GL_RGB, GL_FLOAT, pathtracer::filtered_image.getPtr());
+	}
+	else{
 	///////////////////////////////////////////////////////////////////////////
 	// Copy pathtraced image to texture for display
 	///////////////////////////////////////////////////////////////////////////
@@ -267,7 +280,7 @@ void display(void)
 	glBindTexture(GL_TEXTURE_2D, pathtracer_result_txt_id);
 	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, pathtracer::rendered_image.width,
 	             pathtracer::rendered_image.height, 0, GL_RGB, GL_FLOAT, pathtracer::rendered_image.getPtr());
-
+	}
 	///////////////////////////////////////////////////////////////////////////
 	// Render a fullscreen quad, textured with our pathtraced image.
 	///////////////////////////////////////////////////////////////////////////
@@ -476,11 +489,37 @@ void gui()
 		ImGui::SliderInt("Subsampling", &pathtracer::settings.subsampling, 1, 16);
 		ImGui::SliderInt("Max Bounces", &pathtracer::settings.max_bounces, 0, 16);
 		ImGui::SliderInt("Max Paths Per Pixel", &pathtracer::settings.max_paths_per_pixel, 0, 1024);
+
 		if(ImGui::Button("Restart Pathtracing"))
 		{
 			pathtracer::restart();
 		}
+
 		ImGui::Text("Num. samples: %d", pathtracer::getSampleCount());
+		if (ImGui::CollapsingHeader("Depth of Field", "depth_of_field_ch", true, true))
+		{
+			if (ImGui::Checkbox("Use Depth of Field", &pathtracer::settings.use_depth_field))
+			{
+				pathtracer::restart();
+			}
+			if (ImGui::SliderFloat("Aperture Radius", &pathtracer::settings.aperture_radius, 0.0f, 2.0f))
+			{
+				pathtracer::restart();
+			}
+			if (ImGui::SliderFloat("Focus Distance", &pathtracer::settings.focus_distance, 0.1f, 100.0f))
+			{
+				pathtracer::restart();
+			}
+		}
+		if (ImGui::CollapsingHeader("Denoising", "denoising_ch", true, true))
+		{
+			ImGui::Checkbox("Show Denoised Image", &showDenoisedImage);
+			if (ImGui::Checkbox("Firefly Clamping", &pathtracer::settings.firefly_clamping))
+			{
+				pathtracer::restart();
+			}
+		}
+
 	}
 
 	///////////////////////////////////////////////////////////////////////////
@@ -546,6 +585,10 @@ void gui()
 	///////////////////////////////////////////////////////////////////////////
 	if(ImGui::CollapsingHeader("Light sources", "lights_ch", true, true))
 	{
+		if(ImGui::Checkbox("Area Lights", &withArealights))
+		{
+			pathtracer::restart();
+		}
 		ImGui::Checkbox("Show Light Overlays", &showLightSources);
 		ImGui::SliderFloat("Environment multiplier", &pathtracer::environment.multiplier, 0.0f, 10.0f);
 		ImGui::Separator();

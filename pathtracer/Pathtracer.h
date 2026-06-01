@@ -26,6 +26,10 @@ extern struct Settings
 	int subsampling;
 	int max_bounces;
 	int max_paths_per_pixel;
+	bool firefly_clamping = false;
+	bool use_depth_field = false;
+	float aperture_radius = 0.05f;
+	float focus_distance = 20.0f;
 };
 extern Settings settings;
 
@@ -52,6 +56,8 @@ extern struct Image
 	}
 };
 extern Image rendered_image;
+extern Image filtered_image;
+
 
 ///////////////////////////////////////////////////////////////////////////////
 // The light sources
@@ -94,4 +100,10 @@ void resize(int w, int h);
 /// Trace one path per pixel
 ///////////////////////////////////////////////////////////////////////////
 void tracePaths(const mat4& V, const mat4& P);
+
+///////////////////////////////////////////////////////////////////////////
+/// Bilateral Filter for post-process denoising
+///////////////////////////////////////////////////////////////////////////
+void applyBilateralFilter();
+
 }; // namespace pathtracer
