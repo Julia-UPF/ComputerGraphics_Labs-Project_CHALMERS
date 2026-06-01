@@ -255,6 +255,8 @@ void tracePaths(const glm::mat4& V, const glm::mat4& P)
 		return;
 	}
 	vec3 camera_pos = vec3(glm::inverse(V) * vec4(0.0f, 0.0f, 0.0f, 1.0f));
+	vec3 camera_direction = normalize(vec3(glm::inverse(V) * vec4(0.0f, 0.0f, -1.0f, 0.0f)));
+
 	std::fill(normal_buffer.begin(), normal_buffer.end(), vec3(0.0f)); //fill normal_buffer with initiaal vec3(0) normals
 	std::fill(depth_buffer.begin(), depth_buffer.end(), 1e30f); //fill depth_buffer with initiaal large number (best would be with far plane values but i couldn't find it)
 
@@ -278,7 +280,8 @@ void tracePaths(const glm::mat4& V, const glm::mat4& P)
 			// the current pixel on a virtual screen.
 			float random1 = randf();		//ADDED to get a random number in the range [0,1] (anti-aliasing) 
 			float random2 = randf();
-			vec2 screenCoord = vec2((float(x) + random1)/ rendered_image.width, (float(y) + random2) / rendered_image.height);
+			//shoot through random point of pixel
+			vec2 screenCoord = vec2((x + random1)/ rendered_image.width, (y + random2) / rendered_image.height);
 			
 			// Calculate direction
 			vec4 viewCoord = vec4(screenCoord.x * 2.0f - 1.0f, screenCoord.y * 2.0f - 1.0f, 1.0f, 1.0f);
@@ -291,9 +294,10 @@ void tracePaths(const glm::mat4& V, const glm::mat4& P)
 				vec3 camera_right = normalize(cross(forward, vec3(0.0f, 1.0f, 0.0f)));	//right vector of the camera, perpendicular to the forward direction and the world up vector (0,1,0)
 				vec3 camera_up = normalize(cross(camera_right, forward));	//up vector of the camera, perpendicular to the forward direction and the camera right vector
 
-				vec3 focal_point = camera_pos + forward * settings.focus_distance;	//point in space where the camera is focused, so that objects at this distance will be in focus
+				float ft = settings.focus_distance / dot(camera_direction, primaryRay.d);	//distance from camera to focal plane along the ray direction
+				vec3 focal_plane = camera_pos + primaryRay.d*ft;	//plane where the camera is focused, so that objects at this distance will be in focus
 
-				//sample point on lens
+				//sample random point on lens
 				float r = sqrt(randf()) * settings.aperture_radius;
 				float theta = 2 * M_PI * randf();
 
@@ -302,8 +306,8 @@ void tracePaths(const glm::mat4& V, const glm::mat4& P)
 
 				vec3 lens_pos = camera_pos + lens_x * camera_right + lens_y * camera_up;
 
-				primaryRay.o = lens_pos;
-				primaryRay.d = normalize(focal_point - lens_pos);
+				primaryRay.o = lens_pos;	
+				primaryRay.d = normalize(focal_plane - lens_pos);
 			}
 
 
@@ -324,11 +328,11 @@ void tracePaths(const glm::mat4& V, const glm::mat4& P)
 				// Otherwise evaluate environment
 				color = Lenvironment(primaryRay.d);
 			}
-			//Firefly clamping
-			float luminance = dot(color, vec3(0.2126f, 0.7152f, 0.0722f));
+			//Firefly clamping		(AI)
+			float luminance = dot(color, vec3(0.2126f, 0.7152f, 0.0722f));		//based on different sensitivity of human eye to different colors (more sensitive to green, less to blue)
 			float max_luminance = 10.0f;
 			if (luminance > max_luminance && settings.firefly_clamping)
-				color *= max_luminance / luminance;
+				color *= max_luminance / luminance;							//set a maximum luminance to avoid fireflies (bright pixels)
 
 
 			// Accumulate the obtained radiance to the pixels color
